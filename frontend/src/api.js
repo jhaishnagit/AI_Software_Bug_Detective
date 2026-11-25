@@ -5,7 +5,7 @@ const api = axios.create({
   baseURL:
     import.meta.env.VITE_API_BASE_URL ||
     'http://127.0.0.1:8000/api',
-  timeout: 30000,
+  timeout: 120000, // Long source-analysis and report requests may need more than 30 seconds.
 });
 
 // Attach JWT token to every request
@@ -42,6 +42,12 @@ api.interceptors.response.use(
 
 // Display readable error messages
 export const messageOf = (error) => {
+  if (error?.code === 'ERR_NETWORK' || (!error?.response && error?.request)) {
+    return 'Cannot reach the backend API at http://127.0.0.1:8000. Start the FastAPI server in its terminal and check /api/health.';
+  }
+  if (error?.code === 'ECONNABORTED') {
+    return 'The request took longer than 120 seconds. For large projects, use Queue background scan and keep the worker running.';
+  }
   const detail = error?.response?.data?.detail;
 
   if (Array.isArray(detail)) {

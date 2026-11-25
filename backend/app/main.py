@@ -16,6 +16,9 @@ import uuid
 import ast
 
 import json
+import hashlib
+import time
+from datetime import datetime, timezone
 
 
 
@@ -35,7 +38,7 @@ from sqlalchemy.orm import Session
 
 
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 
 
@@ -51,7 +54,7 @@ from app.config.settings import settings
 
 
 
-from app.models import User, Project, ProjectUpload, SourceChunk, Bug, BugAnalysis, TestCase, Attachment
+from app.models import User, Project, ProjectUpload, SourceChunk, Bug, BugAnalysis, TestCase, Attachment, TestExecutionHistory, ScanRun, ScanFinding, ScanJob
 
 
 
@@ -96,7 +99,7 @@ Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 
 
 
-app = FastAPI(title=settings.app_name, version="1.0.0", description="AI-assisted bug triage starter")
+app = FastAPI(title=settings.app_name, version="1.1.0", description="AI-assisted source scanning, bug triage, test generation, and report workspace")
 
 
 
@@ -1319,7 +1322,28 @@ async def generate_project_test_cases(
 
             raise HTTPException(status_code=502, detail="No usable test cases were returned by the AI provider.")
 
-
+        upload_record, project_record = ensure_upload_project(upload_id, user, db)
+        persisted_cases = []
+        for case in test_cases:
+            source_key = hashlib.sha256(
+                f"{case['scenario']}|{case['input_data']}|{case['expected_result']}".encode("utf-8", errors="replace")
+            ).hexdigest()
+            stored_case = db.query(TestCase).filter(
+                TestCase.upload_id == upload_id, TestCase.source_key == source_key
+            ).first()
+            if stored_case is None:
+                stored_case = TestCase(
+                    bug_id=None, project_id=project_record.id, upload_id=upload_id, source_key=source_key,
+                    scenario=case["scenario"], input_data=case["input_data"],
+                    expected_result=case["expected_result"], priority=case["priority"],
+                    test_type=case["test_type"], executed=False,
+                )
+                db.add(stored_case)
+            persisted_cases.append(stored_case)
+        db.commit()
+        for case, stored_case in zip(test_cases, persisted_cases):
+            db.refresh(stored_case)
+            case["id"] = stored_case.id
 
         return {
 
@@ -1367,7 +1391,121 @@ async def generate_project_test_cases(
 
 
 
-# Step 4 (safe MVP): automated static checks. This does not execute uploaded code.
+def ensure_upload_project(upload_id: str, user: User, db: Session) -> tuple[ProjectUpload, Project]:
+    upload = db.get(ProjectUpload, upload_id)
+    if upload is None or upload.owner_id != user.id:
+        raise HTTPException(status_code=404, detail="Uploaded project was not found.")
+    project = db.get(Project, upload.project_id) if upload.project_id else None
+    if project is None:
+        project = Project(
+            name=f"Uploaded Project {upload_id[:8]}",
+            description="Project created automatically from a source ZIP upload.",
+            technology="Auto-detected during source analysis",
+            repository_url="",
+            owner_id=user.id,
+        )
+        db.add(project)
+        db.flush()
+        upload.project_id = project.id
+    return upload, project
+
+
+# Persist scan results as durable bug records. Findings are deduplicated per uploaded source archive.
+def persist_scan_results(upload_id: str, user: User, db: Session, results: list[dict], counts: dict, files_checked: int, duration_seconds: float) -> dict:
+    upload, project = ensure_upload_project(upload_id, user, db)
+
+    scan_status = "ISSUES_FOUND" if counts["failed"] else ("SCAN_ERRORS" if counts["errors"] else "PASSED")
+    run = ScanRun(
+        upload_id=upload_id, project_id=project.id, initiated_by=user.id,
+        status=scan_status, execution_mode="STATIC_SAFE_CHECKS",
+        total_checks=counts["total_checks"], passed=counts["passed"],
+        failed=counts["failed"], errors=counts["errors"], skipped=counts["skipped"],
+        files_checked=files_checked, duration_seconds=duration_seconds,
+        summary={"results": results},
+    )
+    db.add(run)
+    db.flush()
+
+    detected = []
+    for item in results:
+        if item.get("status") != "FAIL":
+            continue
+        analysis = analyze_source_bug(item)
+        check_name = str(item.get("check", "Source check"))
+        details = str(item.get("details", ""))
+        fingerprint = hashlib.sha256(
+            f"{check_name.strip().lower()}|{details.strip().lower()}".encode("utf-8", errors="replace")
+        ).hexdigest()
+        source_file = check_name.split(":", 1)[1].strip() if ":" in check_name else check_name
+        finding = db.query(ScanFinding).filter(
+            ScanFinding.upload_id == upload_id, ScanFinding.fingerprint == fingerprint
+        ).first()
+
+        if finding is None:
+            title = f"{analysis.get('bug_type', 'SOURCE_ISSUE')}: {Path(source_file).name}"[:220]
+            bug = Bug(
+                title=title,
+                description="Automatically detected by the project's safe static source scan. Review the evidence before applying a fix.",
+                error_message=details,
+                reproduction_steps="Re-run the source scan after reviewing the reported file.",
+                expected_result="Source file should pass the configured static syntax/manifest checks.",
+                actual_result=details,
+                module=Path(source_file).suffix.lstrip(".").upper() or "SOURCE",
+                environment="Uploaded Source",
+                severity=analysis.get("severity", "MEDIUM"),
+                status="OPEN", project_id=project.id, reporter_id=user.id,
+            )
+            db.add(bug)
+            db.flush()
+            finding = ScanFinding(
+                upload_id=upload_id, project_id=project.id, scan_run_id=run.id, bug_id=bug.id,
+                fingerprint=fingerprint, rule_code=analysis.get("bug_type", "STATIC_CHECK"),
+                source_file=source_file[:512], line_number=analysis.get("line_number"),
+                severity=analysis.get("severity", "MEDIUM"), finding_status="OPEN",
+                title=title, details=details, root_cause=analysis.get("root_cause", ""),
+                suggested_fix=analysis.get("suggested_fix", ""), occurrence_count=1,
+            )
+            db.add(finding)
+        else:
+            finding.scan_run_id = run.id
+            finding.last_seen_at = datetime.now(timezone.utc)
+            finding.occurrence_count += 1
+            finding.details = details
+            finding.root_cause = analysis.get("root_cause", finding.root_cause)
+            finding.suggested_fix = analysis.get("suggested_fix", finding.suggested_fix)
+            finding.severity = analysis.get("severity", finding.severity)
+            bug = db.get(Bug, finding.bug_id)
+
+        detected.append({
+            "bug_id": finding.bug_id, "title": finding.title, "severity": finding.severity,
+            "source_file": finding.source_file, "line_number": finding.line_number,
+            "root_cause": finding.root_cause, "suggested_fix": finding.suggested_fix,
+            "occurrence_count": finding.occurrence_count,
+        })
+
+    db.commit()
+    return {"scan_run_id": run.id, "project_id": project.id, "scan_status": scan_status, "detected_bugs": detected}
+
+
+# Step 4: safe static checks. Uploaded source code is parsed, not executed.
+
+@app.post("/api/projects/{upload_id}/scan-jobs", status_code=202)
+def create_scan_job(upload_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Queue a scan for the separately running database-backed worker."""
+    require_owned_project_upload(upload_id, user, db)
+    job = ScanJob(id=uuid.uuid4().hex, upload_id=upload_id, owner_id=user.id, status="QUEUED", progress=0, result={})
+    db.add(job)
+    db.commit()
+    return {"job_id": job.id, "upload_id": upload_id, "status": job.status, "message": "Scan queued. Ensure the background worker is running."}
+
+
+@app.get("/api/scan-jobs/{job_id}")
+def get_scan_job(job_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    job = db.query(ScanJob).filter(ScanJob.id == job_id, ScanJob.owner_id == user.id).first()
+    if not job:
+        raise HTTPException(404, "Scan job not found")
+    return {"job_id": job.id, "upload_id": job.upload_id, "status": job.status, "progress": job.progress, "result": job.result or {}, "error_message": job.error_message, "created_at": job.created_at, "started_at": job.started_at, "completed_at": job.completed_at}
+
 
 @app.post("/api/projects/{upload_id}/run-tests")
 
@@ -1390,6 +1528,7 @@ def run_project_checks(
 
     """
 
+    scan_started = time.perf_counter()
     zip_path = require_owned_project_upload(upload_id, user, db)
 
 
@@ -1507,10 +1646,15 @@ def run_project_checks(
         errors = sum(item["status"] == "ERROR" for item in results)
         skipped = sum(item["status"] == "SKIPPED" for item in results)
 
-        
+        persistence = persist_scan_results(
+            upload_id, user, db, results,
+            {"total_checks": len(results), "passed": passed, "failed": failed, "errors": errors, "skipped": skipped},
+            checked_files, time.perf_counter() - scan_started,
+        )
 
         return {
             "upload_id": upload_id,
+            **persistence,
             "status": "CHECKS_COMPLETED",
             "execution_mode": "STATIC_SAFE_CHECKS",
             "total_checks": len(results),
@@ -1552,6 +1696,8 @@ def execute_project_tests(
     """Run uploaded project tests using the isolated Docker runner."""
 
     zip_path = require_owned_project_upload(upload_id, user, db)
+    execution_started_at = datetime.now(timezone.utc)
+    execution_timer = time.perf_counter()
 
     max_files = MAX_PROJECT_FILES
     max_uncompressed_bytes = 100 * 1024 * 1024
@@ -1620,6 +1766,23 @@ def execute_project_tests(
                     encoding="utf-8",
                 )
 
+                _, linked_project = ensure_upload_project(upload_id, user, db)
+                execution_completed_at = datetime.now(timezone.utc)
+                db.add(TestExecutionHistory(
+                    upload_id=upload_id, project_id=linked_project.id, test_case_id=None,
+                    initiated_by=user.id, status=str(result.get("status", "UNKNOWN"))[:40],
+                    execution_mode=str(result.get("execution_mode", "UNKNOWN"))[:40],
+                    total=int(result.get("total", 0) or 0), passed=int(result.get("passed", 0) or 0),
+                    failed=int(result.get("failed", 0) or 0), errors=int(result.get("errors", 0) or 0),
+                    skipped=int(result.get("skipped", 0) or 0),
+                    duration_seconds=time.perf_counter() - execution_timer,
+                    runtime_executed=bool(result.get("runtime_executed", False)),
+                    output=str(result.get("output", ""))[:50000],
+                    error_message=str(result.get("message", ""))[:5000] if result.get("status") in {"ERROR", "TIMEOUT"} else "",
+                    failure_reason=str(result.get("message", ""))[:5000] if result.get("status") == "FAILED" else "",
+                    started_at=execution_started_at, completed_at=execution_completed_at,
+                ))
+                db.commit()
 
                 return {
                     "upload_id": upload_id,
@@ -1642,14 +1805,82 @@ def execute_project_tests(
 
 
 # Step 5: return a structured report for the safe static checks.
+@app.get("/api/projects/{upload_id}/execution-history")
+def get_project_execution_history(
+    upload_id: str, db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    require_owned_project_upload(upload_id, user, db)
+    rows = db.query(TestExecutionHistory).filter(
+        TestExecutionHistory.upload_id == upload_id
+    ).order_by(TestExecutionHistory.started_at.desc()).limit(100).all()
+    return [{
+        "id": row.id, "upload_id": row.upload_id, "project_id": row.project_id,
+        "status": row.status, "execution_mode": row.execution_mode,
+        "total": row.total, "passed": row.passed, "failed": row.failed,
+        "errors": row.errors, "skipped": row.skipped,
+        "duration_seconds": row.duration_seconds, "runtime_executed": row.runtime_executed,
+        "output": row.output, "error_message": row.error_message,
+        "failure_reason": row.failure_reason, "started_at": row.started_at,
+        "completed_at": row.completed_at,
+    } for row in rows]
+
+
+@app.get("/api/projects/{upload_id}/scan-history")
+def get_project_scan_history(
+    upload_id: str, db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    require_owned_project_upload(upload_id, user, db)
+    rows = db.query(ScanRun).filter(ScanRun.upload_id == upload_id).order_by(ScanRun.created_at.desc()).limit(100).all()
+    return [{
+        "id": row.id, "upload_id": row.upload_id, "project_id": row.project_id,
+        "status": row.status, "execution_mode": row.execution_mode,
+        "total_checks": row.total_checks, "passed": row.passed, "failed": row.failed,
+        "errors": row.errors, "skipped": row.skipped, "files_checked": row.files_checked,
+        "duration_seconds": row.duration_seconds, "created_at": row.created_at,
+    } for row in rows]
+
+
+@app.get("/api/scan-runs")
+def list_scan_runs(
+    project_id: int | None = None, limit: int = 50, offset: int = 0,
+    db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    query = db.query(ScanRun).join(Project, ScanRun.project_id == Project.id)
+    if user.role not in {"ADMIN", "MANAGER"}:
+        query = query.filter(Project.owner_id == user.id)
+    if project_id is not None:
+        query = query.filter(ScanRun.project_id == project_id)
+    rows = query.order_by(ScanRun.created_at.desc()).offset(offset).limit(limit).all()
+    return [{
+        "id": row.id, "upload_id": row.upload_id, "project_id": row.project_id,
+        "project_name": row.project.name, "status": row.status,
+        "execution_mode": row.execution_mode, "total_checks": row.total_checks,
+        "passed": row.passed, "failed": row.failed, "errors": row.errors,
+        "skipped": row.skipped, "files_checked": row.files_checked,
+        "duration_seconds": row.duration_seconds, "created_at": row.created_at,
+    } for row in rows]
+
+
 @app.get("/api/projects/{upload_id}/test-report")
 def get_project_test_report(
     upload_id: str,
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
-    """Generate a report from the safe static checks; uploaded code is not executed."""
-    check_result = run_project_checks(upload_id, user, db)
+    """Return the latest persisted scan report; run a scan only when none exists."""
+    require_owned_project_upload(upload_id, user, db)
+    latest_run = db.query(ScanRun).filter(ScanRun.upload_id == upload_id).order_by(ScanRun.created_at.desc()).first()
+    if latest_run is not None:
+        check_result = {
+            "total_checks": latest_run.total_checks, "passed": latest_run.passed,
+            "failed": latest_run.failed, "errors": latest_run.errors,
+            "skipped": latest_run.skipped, "files_checked": latest_run.files_checked,
+            "results": (latest_run.summary or {}).get("results", []),
+        }
+    else:
+        check_result = run_project_checks(upload_id, user, db)
     results = check_result.get("results", [])
     failed_items = [item for item in results if item.get("status") == "FAIL"]
     error_items = [item for item in results if item.get("status") == "ERROR"]
@@ -1992,6 +2223,87 @@ def download_project_test_report_excel(
             )
         },
     )
+@app.get("/api/projects/{upload_id}/test-report/pdf")
+def download_project_test_report_pdf(
+    upload_id: str, db: Session = Depends(get_db), user: User = Depends(current_user),
+):
+    """Download a formatted PDF of the latest safe static source scan."""
+    from html import escape
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
+
+    report_data = get_project_test_report(upload_id, user, db)
+    check_result = {**report_data.get("summary", {}), "results": report_data.get("all_results", [])}
+    output = BytesIO()
+    document = SimpleDocTemplate(
+        output, pagesize=landscape(A4), rightMargin=14 * mm, leftMargin=14 * mm,
+        topMargin=14 * mm, bottomMargin=14 * mm, title="AI Software Bug Detective - Scan Report",
+    )
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="ReportTitle", parent=styles["Title"], alignment=TA_CENTER, textColor=colors.HexColor("#17365D")))
+    styles.add(ParagraphStyle(name="SmallCell", parent=styles["BodyText"], fontSize=7, leading=9, wordWrap="CJK"))
+    story = [
+        Paragraph("AI Software Bug Detective", styles["ReportTitle"]),
+        Paragraph("Automated Source Scan Report", styles["Heading2"]),
+        Paragraph(f"Upload ID: {escape(upload_id)}", styles["BodyText"]),
+        Paragraph(f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", styles["BodyText"]),
+        Spacer(1, 6 * mm),
+    ]
+    summary = [
+        ["Overall", "Total Checks", "Passed", "Failed", "Errors", "Skipped", "Files Checked"],
+        ["ISSUES FOUND" if check_result.get("failed") else "COMPLETED",
+         check_result.get("total_checks", 0), check_result.get("passed", 0),
+         check_result.get("failed", 0), check_result.get("errors", 0),
+         check_result.get("skipped", 0), check_result.get("files_checked", 0)],
+    ]
+    summary_table = Table(summary, repeatRows=1, hAlign="LEFT")
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17365D")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E1")),
+        ("PADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story.extend([summary_table, Spacer(1, 6 * mm), Paragraph("Detected Findings", styles["Heading2"])])
+    rows = [["Check", "Status", "Severity", "Root Cause", "Suggested Fix"]]
+    for item in check_result.get("results", []):
+        if item.get("status") not in {"FAIL", "ERROR", "SKIPPED"}:
+            continue
+        analysis = analyze_source_bug(item) if item.get("status") == "FAIL" else {}
+        rows.append([
+            Paragraph(escape(str(item.get("check", ""))), styles["SmallCell"]),
+            Paragraph(escape(str(item.get("status", ""))), styles["SmallCell"]),
+            Paragraph(escape(str(analysis.get("severity", "N/A"))), styles["SmallCell"]),
+            Paragraph(escape(str(analysis.get("root_cause", item.get("details", "")))), styles["SmallCell"]),
+            Paragraph(escape(str(analysis.get("suggested_fix", "Review the scan details."))), styles["SmallCell"]),
+        ])
+    if len(rows) == 1:
+        rows.append([Paragraph("No failed, error, or skipped checks were reported.", styles["SmallCell"]), "", "", "", ""])
+    findings = Table(rows, colWidths=[48 * mm, 20 * mm, 20 * mm, 75 * mm, 75 * mm], repeatRows=1)
+    findings.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17365D")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("PADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.extend([findings, Spacer(1, 5 * mm), Paragraph(
+        "Scope: static syntax and manifest checks only. Uploaded application code was not executed by this scan. A passing static scan does not prove that the application is defect-free.",
+        styles["Italic"],
+    )])
+    document.build(story)
+    output.seek(0)
+    return StreamingResponse(
+        output, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="bug-detective-report-{upload_id}.pdf"'},
+    )
+
+
 @app.get("/api/projects/{project_id}", response_model=ProjectOut)
 
 
@@ -2236,11 +2548,31 @@ async def analyze_bug(bug_id: int, db: Session = Depends(get_db), user: User = D
 
 
 
+    except ValueError as exc:
+
+
+
+        bug.status = "OPEN"; db.commit()
+
+
+
+        raise HTTPException(502, f"AI analysis failed: {exc}")
+
+
+
     except Exception as exc:
 
 
 
         bug.status = "OPEN"; db.commit()
+
+
+
+        logger.error(
+            "AI analysis failed (bug_id=%s, error_type=%s)",
+            bug_id,
+            type(exc).__name__,
+        )
 
 
 
@@ -2264,7 +2596,7 @@ async def analyze_bug(bug_id: int, db: Session = Depends(get_db), user: User = D
 
 
 
-        db.add(TestCase(bug_id=bug.id, scenario=str(case.get("scenario","Generated test"))[:240], input_data=str(case.get("input_data",""))[:5000], expected_result=str(case.get("expected_result",""))[:5000], priority=str(case.get("priority","MEDIUM")).upper() if str(case.get("priority","MEDIUM")).upper() in {"LOW","MEDIUM","HIGH","CRITICAL"} else "MEDIUM", test_type=str(case.get("test_type","FUNCTIONAL")).upper()[:30]))
+        db.add(TestCase(bug_id=bug.id, project_id=bug.project_id, scenario=str(case.get("scenario","Generated test"))[:240], input_data=str(case.get("input_data",""))[:5000], expected_result=str(case.get("expected_result",""))[:5000], priority=str(case.get("priority","MEDIUM")).upper() if str(case.get("priority","MEDIUM")).upper() in {"LOW","MEDIUM","HIGH","CRITICAL"} else "MEDIUM", test_type=str(case.get("test_type","FUNCTIONAL")).upper()[:30]))
 
 
 
@@ -2296,25 +2628,17 @@ def list_analyses(bug_id: int, db: Session = Depends(get_db), user: User = Depen
 
 
 
-def list_test_cases(bug_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
-
-
-
-    q = db.query(TestCase).join(Bug).join(Project)
-
-
-
-    if user.role not in {"ADMIN","MANAGER"}: q = q.filter(Project.owner_id == user.id)
-
-
-
-    if bug_id is not None: q = q.filter(TestCase.bug_id == bug_id)
-
-
-
-    return q.all()
-
-    return q.all()
+def list_test_cases(bug_id: int | None = None, project_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    q = db.query(TestCase).outerjoin(Bug, TestCase.bug_id == Bug.id).outerjoin(
+        Project, or_(TestCase.project_id == Project.id, Bug.project_id == Project.id)
+    )
+    if user.role not in {"ADMIN", "MANAGER"}:
+        q = q.filter(Project.owner_id == user.id)
+    if bug_id is not None:
+        q = q.filter(TestCase.bug_id == bug_id)
+    if project_id is not None:
+        q = q.filter(or_(TestCase.project_id == project_id, Bug.project_id == project_id))
+    return q.order_by(TestCase.id.desc()).all()
 
 @app.get("/api/test-cases/excel")
 def download_test_cases_excel(
@@ -2322,7 +2646,9 @@ def download_test_cases_excel(
     user: User = Depends(current_user),
 ):
     """Download the authenticated user's test cases as an Excel workbook."""
-    query = db.query(TestCase).join(Bug).join(Project)
+    query = db.query(TestCase).outerjoin(Bug, TestCase.bug_id == Bug.id).outerjoin(
+        Project, or_(TestCase.project_id == Project.id, Bug.project_id == Project.id)
+    )
     if user.role not in {"ADMIN", "MANAGER"}:
         query = query.filter(Project.owner_id == user.id)
 
@@ -2405,11 +2731,18 @@ def update_test_case(case_id: int, payload: TestCaseUpdate, db: Session = Depend
 
 
 
-    if not case: raise HTTPException(404, "Test case not found")
-
-
-
-    require_bug(db, case.bug_id, user); case.executed = payload.executed; db.commit(); db.refresh(case); return case
+    if not case:
+        raise HTTPException(404, "Test case not found")
+    if case.bug_id is not None:
+        require_bug(db, case.bug_id, user)
+    elif case.project_id is not None:
+        require_project(db, case.project_id, user)
+    else:
+        raise HTTPException(403, "This test case is not linked to an accessible project.")
+    case.executed = payload.executed
+    db.commit()
+    db.refresh(case)
+    return case
 
 
 
@@ -2434,10 +2767,14 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(current_user))
 
 
     bugs = q.all()
+    scan_query = db.query(ScanRun)
+    if project_ids:
+        scan_query = scan_query.filter(ScanRun.project_id.in_(project_ids))
+    else:
+        scan_query = scan_query.filter(ScanRun.id == -1)
+    total_scans = scan_query.count()
 
-
-
-    return {"projects":len(project_ids),"total_bugs":len(bugs),"open_bugs":sum(b.status in {"OPEN","REOPENED","ANALYZING","IN_PROGRESS"} for b in bugs),"critical_bugs":sum(b.severity == "CRITICAL" for b in bugs),"resolved_bugs":sum(b.status in {"RESOLVED","CLOSED"} for b in bugs),"recent_bugs":[{"id":b.id,"title":b.title,"severity":b.severity,"status":b.status,"project":b.project.name,"created_at":b.created_at} for b in sorted(bugs,key=lambda x:x.created_at,reverse=True)[:8]]}
+    return {"projects":len(project_ids),"total_bugs":len(bugs),"open_bugs":sum(b.status in {"OPEN","REOPENED","ANALYZING","IN_PROGRESS"} for b in bugs),"critical_bugs":sum(b.severity == "CRITICAL" for b in bugs),"resolved_bugs":sum(b.status in {"RESOLVED","CLOSED"} for b in bugs),"total_scans":total_scans,"recent_bugs":[{"id":b.id,"title":b.title,"severity":b.severity,"status":b.status,"project":b.project.name,"created_at":b.created_at} for b in sorted(bugs,key=lambda x:x.created_at,reverse=True)[:8]]}
 
 
 @app.get("/api/test-runner/local-report")

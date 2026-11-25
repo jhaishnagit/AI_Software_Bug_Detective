@@ -8,3 +8,5 @@ psycopg[binary]>=3.2,<4.0
 pytest>=8.0,<9.0
 email-validator>=2.2,<3.0
 openpyxl
+google-genai>=1.0.0
+reportlab>=4.2,<5

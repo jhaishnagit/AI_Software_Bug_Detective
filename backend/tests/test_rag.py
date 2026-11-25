@@ -196,6 +196,10 @@ def test_generation_injects_retrieved_chunks_into_ai_prompt(tmp_path, monkeypatc
         assert response.status_code == 200, response.text
         assert response.json()["rag"]["status"] == "RETRIEVED"
         assert response.json()["rag"]["retrieved_chunks"] == 5
+        assert response.json()["test_cases"][0]["id"]
+        persisted = client.get("/api/test-cases", headers=headers)
+        assert persisted.status_code == 200
+        assert any(case["upload_id"] == uploaded.json()["upload_id"] for case in persisted.json())
         assert "RETRIEVED SOURCE CONTEXT" in captured["context"]
         assert "Source file: project/src/matching.py" in captured["context"]
         assert "unrelated behavior sentinel 4" not in captured["context"]

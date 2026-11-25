@@ -6,7 +6,7 @@ import { Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-r
 
 
 
-import { Bug, LayoutDashboard, FolderKanban, ListChecks, LogOut, Plus, ShieldCheck, Activity, BrainCircuit, Menu, X, UploadCloud, FileArchive, CheckCircle2 } from 'lucide-react';
+import { Bug, LayoutDashboard, FolderKanban, ListChecks, LogOut, Plus, ShieldCheck, Activity, BrainCircuit, Menu, X, UploadCloud, FileArchive, CheckCircle2, FileText } from 'lucide-react';
 
 
 
@@ -66,6 +66,7 @@ function Shell({ children }) {
     ['/upload', 'Upload Project', UploadCloud],
     ['/bugs', 'Bugs', Bug],
     ['/tests', 'Test Cases', ListChecks],
+    ['/reports', 'Scan Reports', FileText],
   ];
 
   return (
@@ -170,7 +171,7 @@ function Login() { const { login, token } = useAuth(); const nav = useNavigate()
 
 
 
-function Dashboard() { const [data, setData] = useState(null); const [error, setError] = useState(''); useEffect(() => { api.get('/dashboard').then(r => setData(r.data)).catch(e => setError(messageOf(e))) }, []); return <><PageHead eyebrow="OVERVIEW / SYSTEM HEALTH" title="Your debugging command center" subtitle="A live view of project issues and investigation progress." action={<Link className="btn" to="/bugs/new"><Plus size={17} /> Report a bug</Link>} /><Error text={error} /><div className="stats-grid">{[['Tracked projects', data?.projects ?? '—', FolderKanban, 'Across your workspace'], ['Total bugs', data?.total_bugs ?? '—', Bug, 'Recorded issues'], ['Open issues', data?.open_bugs ?? '—', Activity, 'Require attention'], ['Critical bugs', data?.critical_bugs ?? '—', ShieldCheck, 'Highest severity']].map(([label, value, Icon, note]) => <div className="stat-card" key={label}><div className="stat-top"><span>{label}</span><span className="stat-icon"><Icon size={18} /></span></div><div className="stat-value">{value}</div><div className="stat-note">{note}</div></div>)}</div><div className="section-grid"><div className="panel"><div className="panel-head"><div><h3>Recent bug activity</h3><p>Latest issues reported across projects</p></div><Link to="/bugs" className="text-link">View all →</Link></div>{!data ? <div className="empty">Loading workspace…</div> : data.recent_bugs.length === 0 ? <div className="empty"><div className="empty-icon"><Bug /></div><b>No bugs yet</b><p>Create a project, then report your first issue.</p><Link to="/projects" className="text-link">Go to projects →</Link></div> : <div className="table-wrap"><table><thead><tr><th>ISSUE</th><th>PROJECT</th><th>SEVERITY</th><th>STATUS</th></tr></thead><tbody>{data.recent_bugs.map(b => <tr key={b.id}><td><Link className="bug-link" to={`/bugs/${b.id}`}>BUG-{b.id} · {b.title}</Link></td><td>{b.project}</td><td><span className={`pill ${b.severity.toLowerCase()}`}>{b.severity}</span></td><td><span className="status">{b.status.replace('_', ' ')}</span></td></tr>)}</tbody></table></div>}</div><div className="panel ai-panel"><div className="ai-orb"><BrainCircuit size={27} /></div><div className="eyebrow">INVESTIGATION ENGINE</div><h3>From error to explanation</h3><p>Attach logs, provide reproduction steps, and run an AI-assisted analysis to get a probable root cause and suggested regression tests.</p><div className="ai-step"><span>01</span><div><b>Capture context</b><small>Logs, stack traces, expected result</small></div></div><div className="ai-step"><span>02</span><div><b>Analyze evidence</b><small>Probable cause and affected layer</small></div></div><div className="ai-step"><span>03</span><div><b>Validate the fix</b><small>Review generated test cases</small></div></div><Link to="/bugs/new" className="btn secondary full">Start an investigation</Link></div></div></> }
+function Dashboard() { const [data, setData] = useState(null); const [error, setError] = useState(''); useEffect(() => { api.get('/dashboard').then(r => setData(r.data)).catch(e => setError(messageOf(e))) }, []); return <><PageHead eyebrow="OVERVIEW / SYSTEM HEALTH" title="Your debugging command center" subtitle="A live view of project issues and investigation progress." action={<Link className="btn" to="/bugs/new"><Plus size={17} /> Report a bug</Link>} /><Error text={error} /><div className="stats-grid">{[['Tracked projects', data?.projects ?? '—', FolderKanban, 'Across your workspace'], ['Total bugs', data?.total_bugs ?? '—', Bug, 'Recorded issues'], ['Open issues', data?.open_bugs ?? '—', Activity, 'Require attention'], ['Critical bugs', data?.critical_bugs ?? '—', ShieldCheck, 'Highest severity'], ['Source scans', data?.total_scans ?? '—', Activity, 'Saved analysis runs']].map(([label, value, Icon, note]) => <div className="stat-card" key={label}><div className="stat-top"><span>{label}</span><span className="stat-icon"><Icon size={18} /></span></div><div className="stat-value">{value}</div><div className="stat-note">{note}</div></div>)}</div><div className="section-grid"><div className="panel"><div className="panel-head"><div><h3>Recent bug activity</h3><p>Latest issues reported across projects</p></div><Link to="/bugs" className="text-link">View all →</Link></div>{!data ? <div className="empty">Loading workspace…</div> : data.recent_bugs.length === 0 ? <div className="empty"><div className="empty-icon"><Bug /></div><b>No bugs yet</b><p>Create a project, then report your first issue.</p><Link to="/projects" className="text-link">Go to projects →</Link></div> : <div className="table-wrap"><table><thead><tr><th>ISSUE</th><th>PROJECT</th><th>SEVERITY</th><th>STATUS</th></tr></thead><tbody>{data.recent_bugs.map(b => <tr key={b.id}><td><Link className="bug-link" to={`/bugs/${b.id}`}>BUG-{b.id} · {b.title}</Link></td><td>{b.project}</td><td><span className={`pill ${b.severity.toLowerCase()}`}>{b.severity}</span></td><td><span className="status">{b.status.replace('_', ' ')}</span></td></tr>)}</tbody></table></div>}</div><div className="panel ai-panel"><div className="ai-orb"><BrainCircuit size={27} /></div><div className="eyebrow">INVESTIGATION ENGINE</div><h3>From error to explanation</h3><p>Attach logs, provide reproduction steps, and run an AI-assisted analysis to get a probable root cause and suggested regression tests.</p><div className="ai-step"><span>01</span><div><b>Capture context</b><small>Logs, stack traces, expected result</small></div></div><div className="ai-step"><span>02</span><div><b>Analyze evidence</b><small>Probable cause and affected layer</small></div></div><div className="ai-step"><span>03</span><div><b>Validate the fix</b><small>Review generated test cases</small></div></div><Link to="/bugs/new" className="btn secondary full">Start an investigation</Link></div></div></> }
 
 
 
@@ -247,6 +248,7 @@ function UploadProject() {
   const [checks, setChecks] = useState(null);
   const [execution, setExecution] = useState(null);
   const [report, setReport] = useState(null);
+  const [queuedScan, setQueuedScan] = useState(null);
 
   const chooseFile = (event) => {
     const selected = event.target.files?.[0] || null;
@@ -257,6 +259,7 @@ function UploadProject() {
     setChecks(null);
     setExecution(null);
     setReport(null);
+    setQueuedScan(null);
 
     if (selected && !selected.name.toLowerCase().endsWith('.zip')) {
       setFile(null);
@@ -304,6 +307,7 @@ function UploadProject() {
     setChecks(null);
     setExecution(null);
     setReport(null);
+    setQueuedScan(null);
     try {
       const body = new FormData();
       body.append('file', file);
@@ -334,6 +338,28 @@ function UploadProject() {
     await runAction('checks',
       (id) => api.post(`/projects/${encodeURIComponent(id)}/run-tests`),
       setChecks);
+  };
+
+  const queueBackgroundScan = async () => {
+    if (!result?.upload_id) { setError('Upload a ZIP file first.'); return; }
+    setBusy('queue'); setError('');
+    try {
+      const response = await api.post(`/projects/${encodeURIComponent(result.upload_id)}/scan-jobs`);
+      setQueuedScan(response.data);
+    } catch (err) { setError(messageOf(err)); }
+    finally { setBusy(''); }
+  };
+
+  const refreshBackgroundScan = async () => {
+    if (!queuedScan?.job_id) return;
+    setBusy('queue-refresh'); setError('');
+    try {
+      const response = await api.get(`/scan-jobs/${encodeURIComponent(queuedScan.job_id)}`);
+      setQueuedScan(response.data);
+      if (response.data.status === 'COMPLETED' && response.data.result) setChecks(response.data.result);
+      if (response.data.status === 'FAILED') setError(response.data.error_message || 'Background scan failed.');
+    } catch (err) { setError(messageOf(err)); }
+    finally { setBusy(''); }
   };
 
   const executeTests = async () => {
@@ -382,6 +408,27 @@ function UploadProject() {
       link.click();
       link.remove();
 
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(messageOf(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const downloadPdf = async () => {
+    if (!result?.upload_id) return;
+    setBusy('pdf');
+    setError('');
+    try {
+      const response = await api.get(`/projects/${encodeURIComponent(result.upload_id)}/test-report/pdf`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `bug-detective-report-${result.upload_id}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
       setError(messageOf(err));
@@ -510,6 +557,12 @@ function UploadProject() {
             <Button type="button" disabled={Boolean(busy) || !analysis} onClick={runChecks}>
               {busy === 'checks' ? 'Running checks…' : '3. Run static checks'}
             </Button>
+            <Button type="button" disabled={Boolean(busy) || !result?.upload_id} onClick={queueBackgroundScan}>
+              {busy === 'queue' ? 'Queueing…' : 'Queue background scan'}
+            </Button>
+            {queuedScan?.job_id && <Button type="button" disabled={Boolean(busy)} onClick={refreshBackgroundScan}>
+              {busy === 'queue-refresh' ? 'Refreshing…' : `Refresh job (${queuedScan.status})`}
+            </Button>}
 
             <button
               type="button"
@@ -528,7 +581,11 @@ function UploadProject() {
             >
               {busy === 'excel' ? 'Downloading Excel…' : '5. Download Excel Report'}
             </Button>
+            <Button type="button" disabled={Boolean(busy) || !result?.upload_id} onClick={downloadPdf}>
+              {busy === 'pdf' ? 'Preparing PDF…' : '6. Download PDF Report'}
+            </Button>
           </div>
+          {queuedScan?.job_id && <p className="muted">Background scan job: {queuedScan.job_id} · Status: {queuedScan.status}. A worker process must be running in a separate terminal.</p>}
         </div>
 
         {analysis && <div className="panel" style={{ marginTop: 18 }}>
@@ -542,7 +599,7 @@ function UploadProject() {
           <div className="property"><label>Frameworks</label><b>{Array.isArray(analysis.frameworks_detected) ? analysis.frameworks_detected.join(', ') : 'Not detected'}</b></div>
           <div className="property"><label>Dependency files</label><span>{Array.isArray(analysis.dependency_files) ? analysis.dependency_files.join(', ') : 'None listed'}</span></div>
         </div>}
-
+ 
         {generation && <div className="panel" style={{ marginTop: 18 }}>
           <h3>Generated test cases ({count(generation, ['test_case_count', 'count']) || generation.test_cases?.length || 0})</h3>
           <p className="muted">Generated cases are proposals until they are implemented and executed by a supported test runner.</p>
@@ -556,7 +613,7 @@ function UploadProject() {
             </div>
           </div>)}
           {(!generation.test_cases || generation.test_cases.length === 0) && <p className="muted">The API did not return test case details.</p>}
-          {generation.provider && <div className="provider-note">Provider: {generation.provider}</div>}
+          {generation.provider && <div className="provider-note">Provider: {generation.provider}</div>}{generation.warning && <div className="alert" role="status">{generation.warning}</div>}
           {generation.rag && <div className="provider-note">
             RAG: {generation.rag.status} · {generation.rag.retrieved_chunks} source chunks retrieved.
             {generation.rag.status !== 'RETRIEVED' && ` ${generation.rag.message}`}
@@ -565,6 +622,10 @@ function UploadProject() {
 
         {checks && <div className="panel" style={{ marginTop: 18 }}>
           <h3>Static Check Results</h3>
+          <p className="muted">Scan run #{checks.scan_run_id || '—'} · {checks.detected_bugs?.length || 0} durable bug record(s) created or matched in the Bug Tracker.</p>
+          {checks.detected_bugs?.length > 0 && <div className="table-wrap"><table><thead><tr><th>BUG</th><th>SEVERITY</th><th>SOURCE</th><th>ROOT CAUSE</th></tr></thead><tbody>
+            {checks.detected_bugs.map((bug) => <tr key={bug.bug_id}><td><Link className="bug-link" to={`/bugs/${bug.bug_id}`}>BUG-{bug.bug_id} · {bug.title}</Link></td><td><span className={`pill ${String(bug.severity).toLowerCase()}`}>{bug.severity}</span></td><td>{bug.source_file}{bug.line_number ? `:${bug.line_number}` : ''}</td><td>{bug.root_cause}</td></tr>)}
+          </tbody></table></div>}
           <p className="muted" style={{ marginTop: 0 }}>
             Static source and configuration checks only. Uploaded code is not executed by this step.
           </p>
@@ -675,7 +736,45 @@ function UploadProject() {
   </>;
 }
 
-function AppRoutes() { return <Routes><Route path="/login" element={<Login />} /><Route path="/*" element={<Protected><Shell><Routes><Route path="/" element={<Dashboard />} /><Route path="/projects" element={<Projects />} /><Route path="/upload" element={<UploadProject />} /><Route path="/bugs" element={<Bugs />} /><Route path="/bugs/new" element={<BugForm />} /><Route path="/bugs/:id" element={<BugDetails />} /><Route path="/tests" element={<Tests />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes></Shell></Protected>} /></Routes> }
+function Reports() {
+  const [items, setItems] = useState([]);
+  const [error, setError] = useState('');
+  const [busyId, setBusyId] = useState('');
+  const load = () => api.get('/scan-runs', { params: { limit: 100 } }).then(r => setItems(r.data)).catch(e => setError(messageOf(e)));
+  useEffect(() => { load(); }, []);
+  const download = async (item, format) => {
+    setBusyId(`${item.id}-${format}`);
+    setError('');
+    try {
+      const response = await api.get(`/projects/${encodeURIComponent(item.upload_id)}/test-report/${format}`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `bug-detective-${item.upload_id}.${format === 'pdf' ? 'pdf' : 'xlsx'}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) { setError(messageOf(e)); }
+    finally { setBusyId(''); }
+  };
+  return <>
+    <PageHead eyebrow="QUALITY / REPORTING" title="Scan reports" subtitle="Review persisted source scans and download structured reports." action={<Button onClick={load}>Refresh</Button>} />
+    <Error text={error} />
+    <div className="panel"><div className="table-wrap"><table><thead><tr><th>SCAN</th><th>PROJECT</th><th>STATUS</th><th>CHECKS</th><th>FILES</th><th>DATE</th><th>REPORTS</th></tr></thead><tbody>
+      {items.map(item => <tr key={item.id}>
+        <td>SCAN-{item.id}</td><td>{item.project_name}</td><td><span className="status">{item.status}</span></td>
+        <td>{item.total_checks} total · {item.failed} failed</td><td>{item.files_checked}</td><td>{new Date(item.created_at).toLocaleString()}</td>
+        <td><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button type="button" className="btn secondary" disabled={!!busyId} onClick={() => download(item, 'pdf')}>{busyId === `${item.id}-pdf` ? 'Preparing…' : 'PDF'}</button>
+          <button type="button" className="btn secondary" disabled={!!busyId} onClick={() => download(item, 'excel')}>{busyId === `${item.id}-excel` ? 'Preparing…' : 'Excel'}</button>
+        </div></td>
+      </tr>)}
+    </tbody></table>{items.length === 0 && <div className="empty"><div className="empty-icon"><FileText /></div><b>No scan reports yet</b><p>Upload a project and run static checks to create the first report.</p><Link to="/upload" className="btn">Upload project</Link></div>}</div></div>
+  </>;
+}
+
+function AppRoutes() { return <Routes><Route path="/login" element={<Login />} /><Route path="/*" element={<Protected><Shell><Routes><Route path="/" element={<Dashboard />} /><Route path="/projects" element={<Projects />} /><Route path="/upload" element={<UploadProject />} /><Route path="/bugs" element={<Bugs />} /><Route path="/bugs/new" element={<BugForm />} /><Route path="/bugs/:id" element={<BugDetails />} /><Route path="/tests" element={<Tests />} /><Route path="/reports" element={<Reports />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes></Shell></Protected>} /></Routes> }
 
 
 

@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     ai_provider: str = "mock"
     ai_api_key: str = ""
     ai_model: str = "gpt-4o-mini"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.6-flash"
     rag_embedding_api_url: str = ""
     rag_embedding_api_key: str = ""
     rag_embedding_model: str = "text-embedding-3-small"

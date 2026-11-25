@@ -477,3 +477,37 @@ def test_project_detail_and_bug_analysis_require_resource_ownership(
         ).status_code
         == 403
     )
+
+
+def test_bug_analysis_returns_sanitized_provider_error(upload_client, monkeypatch):
+    client, headers, _ = upload_client
+    project = client.post(
+        "/api/projects",
+        headers=headers,
+        json={"name": "Provider error test"},
+    )
+    assert project.status_code == 201, project.text
+    bug = client.post(
+        "/api/bugs",
+        headers=headers,
+        json={"title": "Gemini provider failure", "project_id": project.json()["id"]},
+    )
+    assert bug.status_code == 201, bug.text
+
+    async def fail_analysis(_context):
+        raise ValueError(
+            "Gemini API request failed (HTTP 503); verify the model, API key, "
+            "quota, and service availability"
+        )
+
+    monkeypatch.setattr(main, "analyze", fail_analysis)
+    response = client.post(
+        f"/api/bugs/{bug.json()['id']}/analyze",
+        headers=headers,
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == (
+        "AI analysis failed: Gemini API request failed (HTTP 503); verify the model, "
+        "API key, quota, and service availability"
+    )

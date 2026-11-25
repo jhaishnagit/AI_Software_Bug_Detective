@@ -31,10 +31,29 @@ def analyze_bug(item: dict) -> dict:
         "bug_type": "UNKNOWN",
     }
 
-    # Detect the reported source line, when available.
-    match = re.search(r"\bline\s+(\d+)", text)
-    if match:
-        result["line_number"] = int(match.group(1))
+    # Prefer the structured source line, then parse it from diagnostic text.
+    if isinstance(item.get("line_number"), int):
+        result["line_number"] = item["line_number"]
+    else:
+        match = re.search(r"\bline\s+(\d+)", text)
+        if match:
+            result["line_number"] = int(match.group(1))
+
+    category = str(item.get("category", "")).upper()
+    if category == "SECURITY":
+        result["severity"] = str(item.get("severity") or "HIGH")
+        result["confidence"] = "MEDIUM"
+        result["bug_type"] = check.split(":", 1)[0].replace("Security ", "")[:80]
+        result["root_cause"] = details or "A source pattern associated with a security risk was detected."
+        result["suggested_fix"] = "Review the source context, validate whether the pattern is reachable with untrusted input, and apply the secure coding recommendation. Confirm the fix with a regression/security test."
+    elif category == "PERFORMANCE":
+        result["severity"] = str(item.get("severity") or "MEDIUM")
+        result["confidence"] = "LOW"
+        result["bug_type"] = check.split(":", 1)[0].replace("Performance ", "")[:80]
+        result["root_cause"] = details or "A source pattern that may cause avoidable resource usage was detected."
+        result["suggested_fix"] = "Profile the affected path with representative data, confirm the bottleneck, and consider batching, streaming, or bounded processing before changing the code."
+    elif item.get("severity"):
+        result["severity"] = str(item["severity"])
 
     # Rule 1: Python / JavaScript / TypeScript syntax errors.
     if "syntax error" in text or "syntax:" in text:

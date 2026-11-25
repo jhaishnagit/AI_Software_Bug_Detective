@@ -181,6 +181,24 @@ def run_project_tests(
                 skipped = counts.get("skipped", 0)
 
         total = passed + failed + errors + skipped
+        image_unavailable = completed.returncode == 125 and (
+            "Unable to find image" in output
+            or "pull access denied" in output.lower()
+            or "Cannot connect to the Docker daemon" in output
+        )
+
+        if image_unavailable:
+            return {
+                "status": "ERROR",
+                "message": (
+                    "The isolated runner image is unavailable. Build it with "
+                    "the command in backend/test_runner/README.md. Runtime tests were not executed."
+                ),
+                "total": 0, "passed": 0, "failed": 0, "errors": 1, "skipped": 0,
+                "runtime_executed": False,
+                "execution_mode": "DOCKER_IMAGE_UNAVAILABLE",
+                "output": output[-12000:],
+            }
 
         if completed.returncode == 0:
             status = "PASSED"

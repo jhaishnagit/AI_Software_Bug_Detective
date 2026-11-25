@@ -1,13 +1,13 @@
 # AI Software Bug Detective
 
-AI-assisted bug triage MVP using React/Vite, FastAPI, SQLAlchemy, JWT, and an optional OpenAI/Groq provider. It includes login, projects, bugs, safe log uploads, AI diagnosis, suggested fixes, test-case generation, and a dashboard.
+AI-assisted bug triage MVP using React/Vite, FastAPI, SQLAlchemy, JWT, and optional OpenAI, Groq, or Google Gemini providers. It includes login, projects, bugs, safe log uploads, AI diagnosis, suggested fixes, test-case generation, and a dashboard.
 
 ## Requirements
 
 - Python 3.10+
 - Node.js 18+
 - PostgreSQL 14+ for shared/dev deployment (SQLite works out of the box for a quick local smoke test)
-- Optional: OpenAI or Groq API key for live AI responses
+- Optional: OpenAI, Groq, or Google Gemini API key for live AI responses
 
 ## 1. Backend Setup (Windows PowerShell)
 
@@ -88,8 +88,11 @@ SQLite can be used for quick local testing if supported by the application.
 - `AI_PROVIDER=mock` works without an API key and returns a clearly labeled heuristic diagnosis.
 - For OpenAI, set `AI_PROVIDER=openai`, `AI_API_KEY=YOUR_OPENAI_API_KEY`, and optionally `AI_MODEL=gpt-4o-mini`.
 - For Groq, set `AI_PROVIDER=groq`, `AI_API_KEY=YOUR_GROQ_API_KEY`, and optionally `AI_MODEL=llama-3.3-70b-versatile`.
+- For Google Gemini, set `AI_PROVIDER=gemini`, `GEMINI_API_KEY=YOUR_GEMINI_API_KEY`, and optionally `GEMINI_MODEL=gemini-3.6-flash`.
 
-Use model names supported by your provider and current integration.
+Set these values in `backend/.env`; do not commit the file or share the key. A live provider requires a valid key and available provider quota/billing. Missing credentials and provider failures are reported rather than silently switching to mock mode; select `AI_PROVIDER=mock` to use the heuristic analyzer.
+
+Gemini enables analysis generation only. Source-based RAG embeddings remain separately configured through the existing OpenAI-compatible embedding settings; a Gemini API key does not enable Gemini embeddings.
 
 Never commit `.env` files or real API keys. AI outputs are suggestions; review and test them before applying fixes.
 
