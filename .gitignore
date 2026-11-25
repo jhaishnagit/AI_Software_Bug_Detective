@@ -1,13 +1,20 @@
-# secrets and local state
+# Exclude root-level documentation and other folders
+/.github/
+/database/
+/docs/
+/*.md
+
+# Environment and credentials
 .env
-**/.env
-.venv/
-venv/
+.env.*
+!.env.example
+
+# Dependencies and cache
 node_modules/
-dist/
+venv/
+.venv/
 __pycache__/
-*.py[cod]
-.pytest_cache/
-*.db
-backend/uploads/*
-!backend/uploads/.gitkeep
+*.pyc
+dist/
+build/
+*.log
